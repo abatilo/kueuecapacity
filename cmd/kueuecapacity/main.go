@@ -34,10 +34,15 @@ func main() {
 
 	cmd := &cobra.Command{
 		Use:   "kueuecapacity",
-		Short: "Watch and monitor Kubernetes node events",
-		Long: `kueuecapacity watches Kubernetes nodes for changes and events.
-It monitors node additions, updates, and deletions in real-time,
-with support for label-based filtering to focus on specific node groups.`,
+		Short: "Monitor and sync Kubernetes node capacity with Kueue ClusterQueues",
+		Long: `kueuecapacity monitors Kubernetes nodes and automatically updates
+Kueue ClusterQueue resource quotas to match actual cluster capacity.
+
+It watches node additions, updates, and deletions in real-time,
+groups nodes by ResourceFlavors, and synchronizes the ClusterQueue's
+nominalQuota values with the calculated capacity.
+
+Use --dry-run to only display capacity without updating the ClusterQueue.`,
 		Run: run,
 	}
 
@@ -45,7 +50,7 @@ with support for label-based filtering to focus on specific node groups.`,
 	cmd.Flags().StringP(FlagLabelSelector, "l", "", "Label selector to filter nodes (e.g., 'node-role.kubernetes.io/worker=true')")
 	cmd.Flags().StringP(FlagResources, "r", "cpu,memory,nvidia.com/gpu", "Comma-separated list of resources to track (e.g., 'cpu,memory,nvidia.com/gpu')")
 	cmd.Flags().StringP(FlagClusterQueue, "c", "default", "Name of the ClusterQueue to monitor")
-	cmd.Flags().BoolP(FlagUpdateClusterQueue, "u", false, "Update the ClusterQueue with calculated resource quotas")
+	cmd.Flags().Bool(FlagDryRun, false, "Only display capacity without updating the ClusterQueue")
 
 	// Set default kubeconfig path
 	defaultKubeconfig := ""
@@ -59,7 +64,7 @@ with support for label-based filtering to focus on specific node groups.`,
 	viper.BindPFlag(FlagKubeconfig, cmd.Flags().Lookup(FlagKubeconfig))
 	viper.BindPFlag(FlagResources, cmd.Flags().Lookup(FlagResources))
 	viper.BindPFlag(FlagClusterQueue, cmd.Flags().Lookup(FlagClusterQueue))
-	viper.BindPFlag(FlagUpdateClusterQueue, cmd.Flags().Lookup(FlagUpdateClusterQueue))
+	viper.BindPFlag(FlagDryRun, cmd.Flags().Lookup(FlagDryRun))
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
@@ -96,7 +101,8 @@ func run(cmd *cobra.Command, _ []string) {
 		"kubeconfig", kubeconfig,
 		"labelSelector", labelSelector,
 		"resources", resources,
-		"clusterQueue", clusterQueueName)
+		"clusterQueue", clusterQueueName,
+		"dryRun", viper.GetBool(FlagDryRun))
 
 	// Build Kubernetes config
 	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
@@ -472,9 +478,11 @@ func run(cmd *cobra.Command, _ []string) {
 		}
 		fmt.Println("\n========================================")
 		
-		// Update ClusterQueue if requested
-		if viper.GetBool(FlagUpdateClusterQueue) {
+		// Update ClusterQueue unless dry-run mode
+		if !viper.GetBool(FlagDryRun) {
 			updateClusterQueueQuotas(ctx, log, kueueClient, clusterQueueName, resources, nodesByFlavor)
+		} else {
+			fmt.Println("\n🔍 Dry-run mode: ClusterQueue will not be updated")
 		}
 	}
 
