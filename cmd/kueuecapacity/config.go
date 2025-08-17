@@ -5,4 +5,5 @@ const (
 	FlagLabelSelector = "label-selector"
 	FlagKubeconfig    = "kubeconfig"
 	FlagResources     = "resources"
+	FlagClusterQueue  = "cluster-queue"
 )
