@@ -1,0 +1,33 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kueuecapacity
+  namespace: kueue-system
+  labels:
+    app: kueuecapacity
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kueuecapacity
+  template:
+    metadata:
+      labels:
+        app: kueuecapacity
+    spec:
+      serviceAccountName: kueuecapacity
+      containers:
+      - name: kueuecapacity
+        image: ghcr.io/abatilo/kueuecapacity:v0.0.0
+        args:
+        - --cluster-queue=default
+        - --resources=cpu,memory,nvidia.com/gpu,rdma/ib
+        - --verbose
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 256Mi
