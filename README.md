@@ -1,26 +1,84 @@
 # kueuecapacity
 
-You can indicate capacity to [kueue](https://github.com/kubernetes-sigs/kueue)
-by configuring your [kind:
-ClusterQueue](https://kueue.sigs.k8s.io/docs/concepts/cluster_queue/) resources.
-This works quite well in cloud environments where you have the ability to auto
-scaling capacity from your compute provider and can always have a reasonable
-amount of confidence that whatever you configure your `nominalQuota` to, there
-will be capacity available in the region.
+Automatically sync Kubernetes node capacity with Kueue ClusterQueue quotas.
 
-This model does not work as well when you're in an environment where you're
-expected to operate with fixed capacity, and that capacity is not consistently
-available due to hardware failures. In this case, your `kind: ClusterQueue`
-might be configured to make workload scheduling decisions with an inaccurate
-understanding of the world.
+## Problem
 
-In an ideal world, kueue has the capability of dynamically counting how much
-available quota there is in the cluster. As of `August 17, 2025`, this does not
-seem to be the case, and thus, `kueuecapacity` has been created to solve this
-problem. There are [existing
-issues](https://github.com/kubernetes-sigs/kueue/issues/3183) discussing this
-capability, but these conversations have seemingly gone stale.
+Kueue ClusterQueues use static `nominalQuota` values that don't reflect actual
+cluster capacity. In environments with fixed hardware that experiences failures,
+this leads to inaccurate scheduling decisions.
 
-`kueuecapacity` will take in a configuration that you provide that will
-synchronize between a list of available nodes, and then will update the
-available quota that's configured on a target `kind: ClusterQueue`.
+## Solution
+
+`kueuecapacity` monitors node capacity in real-time and updates ClusterQueue
+quotas to match. It groups nodes by ResourceFlavor labels and aggregates their
+resources.
+
+## Installation
+
+```bash
+kubectl apply -k deploy/
+```
+
+Or use the Docker image directly:
+```bash
+docker pull ghcr.io/abatilo/kueuecapacity:latest
+```
+
+## Usage
+
+```bash
+# Monitor default ClusterQueue with default resources
+kueuecapacity
+
+# Monitor specific ClusterQueue and resources
+kueuecapacity --cluster-queue=gpu-queue --resources=cpu,memory,nvidia.com/gpu
+
+# Filter nodes by label
+kueuecapacity --label-selector="node-role.kubernetes.io/worker=true"
+
+# Dry-run mode (display only, no updates)
+kueuecapacity --dry-run
+
+# Verbose logging
+kueuecapacity --verbose
+```
+
+## Configuration
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--cluster-queue` | `KC_CLUSTER_QUEUE` | `default` | ClusterQueue to update |
+| `--resources` | `KC_RESOURCES` | `cpu,memory,nvidia.com/gpu,rdma/ib` | Resources to track |
+| `--label-selector` | `KC_LABEL_SELECTOR` | `""` | Node label filter |
+| `--dry-run` | `KC_DRY_RUN` | `false` | Display capacity without updating |
+| `--verbose` | `KC_VERBOSE` | `false` | Enable debug logging |
+| `--kubeconfig` | `KC_KUBECONFIG` | `~/.kube/config` | Kubeconfig path |
+
+## How It Works
+
+1. **Watches nodes** - Uses Kubernetes informers to monitor node add/update/delete events
+2. **Groups by flavor** - Matches nodes to ResourceFlavors based on node labels
+3. **Calculates capacity** - Aggregates resources for each ResourceFlavor group
+4. **Updates quotas** - Sets ClusterQueue `nominalQuota` to match calculated capacity
+5. **Skips unchanged** - Only updates when quotas actually change
+
+## Requirements
+
+- Kubernetes cluster with Kueue installed
+- ClusterQueue with ResourceGroups matching tracked resources
+- ResourceFlavors with nodeLabels for node grouping
+- RBAC permissions (see `deploy/rbac.yaml`)
+
+## Development
+
+```bash
+# Run locally
+go run ./cmd/kueuecapacity --dry-run
+
+# Run tests
+go test ./...
+
+# Build binary
+go build -o kueuecapacity ./cmd/kueuecapacity
+```
