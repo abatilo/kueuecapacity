@@ -127,6 +127,9 @@ func (c *Controller) calculateFlavorTotals(nodesByFlavor map[string][]*corev1.No
 
 // updateFlavorQuotas updates the FlavorQuotas in the target ResourceGroup
 func (c *Controller) updateFlavorQuotas(ctx context.Context, cq *kueuev1beta1.ClusterQueue, targetGroupIndex int, flavorTotals map[string]map[string]*resource.Quantity) {
+	// Collect all quota changes for batched logging
+	quotaChanges := make(map[string]map[string]map[string]string) // flavor -> resource -> {old, new}
+
 	for i, fq := range cq.Spec.ResourceGroups[targetGroupIndex].Flavors {
 		flavorName := string(fq.Name)
 		if totals, exists := flavorTotals[flavorName]; exists {
@@ -135,22 +138,40 @@ func (c *Controller) updateFlavorQuotas(ctx context.Context, cq *kueuev1beta1.Cl
 				if newQuota, ok := totals[resourceName]; ok {
 					oldQuota := rq.NominalQuota.DeepCopy()
 					cq.Spec.ResourceGroups[targetGroupIndex].Flavors[i].Resources[j].NominalQuota = *newQuota
-					c.log.DebugContext(ctx, "Updating resource quota",
-						"flavor", flavorName,
-						"resource", resourceName,
-						"oldQuota", oldQuota.String(),
-						"newQuota", newQuota.String())
+
+					// Store the change for batched logging
+					if quotaChanges[flavorName] == nil {
+						quotaChanges[flavorName] = make(map[string]map[string]string)
+					}
+					quotaChanges[flavorName][resourceName] = map[string]string{
+						"old": oldQuota.String(),
+						"new": newQuota.String(),
+					}
 				}
 			}
 		} else {
 			for j := range fq.Resources {
 				resourceName := string(fq.Resources[j].Name)
+				oldQuota := fq.Resources[j].NominalQuota.DeepCopy()
 				cq.Spec.ResourceGroups[targetGroupIndex].Flavors[i].Resources[j].NominalQuota = *resource.NewQuantity(0, resource.DecimalSI)
-				c.log.DebugContext(ctx, "Setting resource quota to zero",
-					"flavor", flavorName,
-					"resource", resourceName)
+
+				// Store the change for batched logging
+				if quotaChanges[flavorName] == nil {
+					quotaChanges[flavorName] = make(map[string]map[string]string)
+				}
+				quotaChanges[flavorName][resourceName] = map[string]string{
+					"old": oldQuota.String(),
+					"new": "0",
+				}
 			}
 		}
+	}
+
+	// Log all quota changes in a single structured message
+	if len(quotaChanges) > 0 {
+		c.log.DebugContext(ctx, "Updated resource quotas",
+			"clusterQueue", c.clusterQueueName,
+			"quotaChanges", quotaChanges)
 	}
 }
 
