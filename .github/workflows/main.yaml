@@ -46,6 +46,7 @@ jobs:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=${{ steps.latest_version.outputs.latest_tag }}
+            type=raw,value=latest
 
       - name: Inject go-build-cache into docker
         uses: reproducible-containers/buildkit-cache-dance@v3
