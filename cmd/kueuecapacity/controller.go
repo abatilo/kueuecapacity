@@ -24,7 +24,6 @@ type EventType int
 
 const (
 	EventAdd EventType = iota
-	EventUpdate
 	EventDelete
 	EventInitial
 	EventFinal
@@ -35,8 +34,6 @@ func (e EventType) String() string {
 	switch e {
 	case EventAdd:
 		return "ADD"
-	case EventUpdate:
-		return "UPDATE"
 	case EventDelete:
 		return "DELETE"
 	case EventInitial:
@@ -46,11 +43,6 @@ func (e EventType) String() string {
 	default:
 		return "UNKNOWN"
 	}
-}
-
-// IsImportant returns true for events that should be logged at INFO level
-func (e EventType) IsImportant() bool {
-	return e == EventAdd || e == EventDelete || e == EventInitial || e == EventFinal
 }
 
 // Controller holds the shared dependencies for the kueuecapacity controller
@@ -120,13 +112,6 @@ func (c *Controller) Run(ctx context.Context) {
 			if ok {
 				c.log.DebugContext(ctx, "Node added", "node", node.Name)
 				c.handleNodeChange(ctx, EventAdd, node.Name, nodeInformer)
-			}
-		},
-		UpdateFunc: func(oldObj, newObj any) {
-			node, ok := newObj.(*corev1.Node)
-			if ok {
-				c.log.DebugContext(ctx, "Node updated", "node", node.Name)
-				c.handleNodeChange(ctx, EventUpdate, node.Name, nodeInformer)
 			}
 		},
 		DeleteFunc: func(obj any) {
@@ -295,16 +280,8 @@ func (c *Controller) logGrandTotals(ctx context.Context, grandTotals map[string]
 		}
 	}
 
-	// Use INFO level for important events, DEBUG for routine updates
-	if eventType.IsImportant() {
-		c.log.InfoContext(ctx, "Cluster capacity summary",
-			"eventType", eventType.String(),
-			"grandTotals", totals,
-			"resourceFlavors", flavorBreakdown)
-	} else {
-		c.log.DebugContext(ctx, "Cluster capacity summary",
-			"eventType", eventType.String(),
-			"grandTotals", totals,
-			"resourceFlavors", flavorBreakdown)
-	}
+	c.log.InfoContext(ctx, "Cluster capacity summary",
+		"eventType", eventType.String(),
+		"grandTotals", totals,
+		"resourceFlavors", flavorBreakdown)
 }
