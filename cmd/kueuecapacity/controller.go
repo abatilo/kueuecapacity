@@ -19,6 +19,40 @@ import (
 	kueueinformers "sigs.k8s.io/kueue/client-go/informers/externalversions"
 )
 
+// EventType represents the type of node event
+type EventType int
+
+const (
+	EventAdd EventType = iota
+	EventUpdate
+	EventDelete
+	EventInitial
+	EventFinal
+)
+
+// String returns the string representation of the EventType
+func (e EventType) String() string {
+	switch e {
+	case EventAdd:
+		return "ADD"
+	case EventUpdate:
+		return "UPDATE"
+	case EventDelete:
+		return "DELETE"
+	case EventInitial:
+		return "INITIAL"
+	case EventFinal:
+		return "FINAL"
+	default:
+		return "UNKNOWN"
+	}
+}
+
+// IsImportant returns true for events that should be logged at INFO level
+func (e EventType) IsImportant() bool {
+	return e == EventAdd || e == EventDelete || e == EventInitial || e == EventFinal
+}
+
 // Controller holds the shared dependencies for the kueuecapacity controller
 type Controller struct {
 	log              *slog.Logger
@@ -85,21 +119,21 @@ func (c *Controller) Run(ctx context.Context) {
 			node, ok := obj.(*corev1.Node)
 			if ok {
 				c.log.DebugContext(ctx, "Node added", "node", node.Name)
-				c.handleNodeChange(ctx, "ADD", node.Name, nodeInformer)
+				c.handleNodeChange(ctx, EventAdd, node.Name, nodeInformer)
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
 			node, ok := newObj.(*corev1.Node)
 			if ok {
 				c.log.DebugContext(ctx, "Node updated", "node", node.Name)
-				c.handleNodeChange(ctx, "UPDATE", node.Name, nodeInformer)
+				c.handleNodeChange(ctx, EventUpdate, node.Name, nodeInformer)
 			}
 		},
 		DeleteFunc: func(obj any) {
 			node, ok := obj.(*corev1.Node)
 			if ok {
 				c.log.DebugContext(ctx, "Node deleted", "node", node.Name)
-				c.handleNodeChange(ctx, "DELETE", node.Name, nodeInformer)
+				c.handleNodeChange(ctx, EventDelete, node.Name, nodeInformer)
 			}
 		},
 	}); err != nil {
@@ -121,14 +155,14 @@ func (c *Controller) Run(ctx context.Context) {
 
 	c.log.DebugContext(ctx, "Cache synced, watching for node changes...")
 
-	c.handleNodeChange(ctx, "INITIAL", "startup", nodeInformer)
+	c.handleNodeChange(ctx, EventInitial, "startup", nodeInformer)
 
 	select {
 	case sig := <-sigChan:
 		c.log.InfoContext(ctx, "Received signal, initiating graceful shutdown", "signal", sig)
 		cancel()
 
-		c.handleNodeChange(ctx, "FINAL", "shutdown", nodeInformer)
+		c.handleNodeChange(ctx, EventFinal, "shutdown", nodeInformer)
 
 		c.log.InfoContext(ctx, "Graceful shutdown complete")
 	case <-runCtx.Done():
@@ -137,10 +171,10 @@ func (c *Controller) Run(ctx context.Context) {
 }
 
 // handleNodeChange processes node changes and updates the display
-func (c *Controller) handleNodeChange(ctx context.Context, eventType string, triggerNode string, nodeInformer cache.SharedIndexInformer) {
+func (c *Controller) handleNodeChange(ctx context.Context, eventType EventType, triggerNode string, nodeInformer cache.SharedIndexInformer) {
 	nodes := nodeInformer.GetStore().List()
 	c.log.DebugContext(ctx, "Node event triggered",
-		"eventType", eventType,
+		"eventType", eventType.String(),
 		"triggerNode", triggerNode,
 		"clusterQueue", c.clusterQueueName,
 		"nodeCount", len(nodes),
@@ -157,7 +191,7 @@ func (c *Controller) handleNodeChange(ctx context.Context, eventType string, tri
 
 	grandTotals := c.displayCapacityInformation(ctx, nodes, nodesByFlavor, flavors)
 
-	c.logGrandTotals(ctx, grandTotals, nodesByFlavor, nodes)
+	c.logGrandTotals(ctx, grandTotals, nodesByFlavor, nodes, eventType)
 
 	if !c.dryRun {
 		c.updateClusterQueueQuotas(ctx, nodesByFlavor)
@@ -183,7 +217,7 @@ func (c *Controller) groupNodesByFlavor(nodes []any, flavors map[string]*kueuev1
 }
 
 // logGrandTotals logs the grand totals of all resources and breakdown by flavor
-func (c *Controller) logGrandTotals(ctx context.Context, grandTotals map[string]*resource.Quantity, nodesByFlavor map[string][]*corev1.Node, allNodes []any) {
+func (c *Controller) logGrandTotals(ctx context.Context, grandTotals map[string]*resource.Quantity, nodesByFlavor map[string][]*corev1.Node, allNodes []any, eventType EventType) {
 	// Log grand totals
 	totals := make(map[string]string)
 	for _, res := range c.resources {
@@ -261,7 +295,16 @@ func (c *Controller) logGrandTotals(ctx context.Context, grandTotals map[string]
 		}
 	}
 
-	c.log.InfoContext(ctx, "Cluster capacity summary",
-		"grandTotals", totals,
-		"resourceFlavors", flavorBreakdown)
+	// Use INFO level for important events, DEBUG for routine updates
+	if eventType.IsImportant() {
+		c.log.InfoContext(ctx, "Cluster capacity summary",
+			"eventType", eventType.String(),
+			"grandTotals", totals,
+			"resourceFlavors", flavorBreakdown)
+	} else {
+		c.log.DebugContext(ctx, "Cluster capacity summary",
+			"eventType", eventType.String(),
+			"grandTotals", totals,
+			"resourceFlavors", flavorBreakdown)
+	}
 }
