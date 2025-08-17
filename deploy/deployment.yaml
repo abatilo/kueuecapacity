@@ -23,7 +23,7 @@ spec:
         args:
         - --cluster-queue=default
         - --resources=cpu,memory,nvidia.com/gpu,rdma/ib
-        - -l node.coreweave.cloud/state=production
+        - --label-selector=node.coreweave.cloud/state=production
         - --verbose
         resources:
           requests:
