@@ -19,10 +19,11 @@ spec:
       serviceAccountName: kueuecapacity
       containers:
       - name: kueuecapacity
-        image: ghcr.io/abatilo/kueuecapacity:v0.0.0
+        image: ghcr.io/abatilo/kueuecapacity:v0.1.0
         args:
         - --cluster-queue=default
         - --resources=cpu,memory,nvidia.com/gpu,rdma/ib
+        - -l node.coreweave.cloud/state=production
         - --verbose
         resources:
           requests:
