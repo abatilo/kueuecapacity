@@ -45,6 +45,7 @@ with support for label-based filtering to focus on specific node groups.`,
 	cmd.Flags().StringP(FlagLabelSelector, "l", "", "Label selector to filter nodes (e.g., 'node-role.kubernetes.io/worker=true')")
 	cmd.Flags().StringP(FlagResources, "r", "cpu,memory,nvidia.com/gpu", "Comma-separated list of resources to track (e.g., 'cpu,memory,nvidia.com/gpu')")
 	cmd.Flags().StringP(FlagClusterQueue, "c", "default", "Name of the ClusterQueue to monitor")
+	cmd.Flags().BoolP(FlagUpdateClusterQueue, "u", false, "Update the ClusterQueue with calculated resource quotas")
 
 	// Set default kubeconfig path
 	defaultKubeconfig := ""
@@ -58,6 +59,7 @@ with support for label-based filtering to focus on specific node groups.`,
 	viper.BindPFlag(FlagKubeconfig, cmd.Flags().Lookup(FlagKubeconfig))
 	viper.BindPFlag(FlagResources, cmd.Flags().Lookup(FlagResources))
 	viper.BindPFlag(FlagClusterQueue, cmd.Flags().Lookup(FlagClusterQueue))
+	viper.BindPFlag(FlagUpdateClusterQueue, cmd.Flags().Lookup(FlagUpdateClusterQueue))
 
 	if err := cmd.Execute(); err != nil {
 		os.Exit(1)
@@ -163,6 +165,109 @@ func run(cmd *cobra.Command, _ []string) {
 			}
 		}
 		return flavors, nil
+	}
+
+	// Helper function to update ClusterQueue quotas
+	updateClusterQueueQuotas := func(ctx context.Context, log *slog.Logger, kueueClient *kueueclientset.Clientset, clusterQueueName string, resources []string, nodesByFlavor map[string][]*corev1.Node) {
+		log.InfoContext(ctx, "Updating ClusterQueue resource quotas", "clusterQueue", clusterQueueName)
+		
+		// Get the current ClusterQueue
+		cq, err := kueueClient.KueueV1beta1().ClusterQueues().Get(ctx, clusterQueueName, metav1.GetOptions{})
+		if err != nil {
+			log.ErrorContext(ctx, "Failed to get ClusterQueue", "error", err)
+			return
+		}
+		
+		// Find the ResourceGroup with matching coveredResources
+		var targetGroupIndex int = -1
+		for i, rg := range cq.Spec.ResourceGroups {
+			// Check if coveredResources match our tracked resources
+			if len(rg.CoveredResources) == len(resources) {
+				match := true
+				for _, res := range resources {
+					found := false
+					for _, coveredRes := range rg.CoveredResources {
+						if string(coveredRes) == res {
+							found = true
+							break
+						}
+					}
+					if !found {
+						match = false
+						break
+					}
+				}
+				if match {
+					targetGroupIndex = i
+					break
+				}
+			}
+		}
+		
+		if targetGroupIndex == -1 {
+			log.WarnContext(ctx, "No matching ResourceGroup found in ClusterQueue", 
+				"requiredResources", resources,
+				"availableGroups", len(cq.Spec.ResourceGroups))
+			return
+		}
+		
+		// Calculate totals per ResourceFlavor
+		flavorTotals := make(map[string]map[string]*resource.Quantity)
+		for flavorName, nodes := range nodesByFlavor {
+			flavorTotals[flavorName] = make(map[string]*resource.Quantity)
+			for _, res := range resources {
+				flavorTotals[flavorName][res] = resource.NewQuantity(0, resource.DecimalSI)
+			}
+			
+			for _, node := range nodes {
+				for _, res := range resources {
+					resName := corev1.ResourceName(res)
+					quantity := node.Status.Capacity[resName]
+					flavorTotals[flavorName][res].Add(quantity)
+				}
+			}
+		}
+		
+		// Update the FlavorQuotas in the target ResourceGroup
+		for i, fq := range cq.Spec.ResourceGroups[targetGroupIndex].Flavors {
+			flavorName := string(fq.Name)
+			if totals, exists := flavorTotals[flavorName]; exists {
+				// Update each resource quota
+				for j, rq := range fq.Resources {
+					resourceName := string(rq.Name)
+					if newQuota, ok := totals[resourceName]; ok {
+						oldQuota := rq.NominalQuota.DeepCopy()
+						cq.Spec.ResourceGroups[targetGroupIndex].Flavors[i].Resources[j].NominalQuota = *newQuota
+						log.InfoContext(ctx, "Updating resource quota",
+							"flavor", flavorName,
+							"resource", resourceName,
+							"oldQuota", oldQuota.String(),
+							"newQuota", newQuota.String())
+					}
+				}
+			} else {
+				// Set quotas to zero for flavors with no nodes
+				for j := range fq.Resources {
+					resourceName := string(fq.Resources[j].Name)
+					cq.Spec.ResourceGroups[targetGroupIndex].Flavors[i].Resources[j].NominalQuota = *resource.NewQuantity(0, resource.DecimalSI)
+					log.InfoContext(ctx, "Setting resource quota to zero",
+						"flavor", flavorName,
+						"resource", resourceName)
+				}
+			}
+		}
+		
+		// Update the ClusterQueue
+		updated, err := kueueClient.KueueV1beta1().ClusterQueues().Update(ctx, cq, metav1.UpdateOptions{})
+		if err != nil {
+			log.ErrorContext(ctx, "Failed to update ClusterQueue", "error", err)
+			return
+		}
+		
+		log.InfoContext(ctx, "Successfully updated ClusterQueue",
+			"clusterQueue", clusterQueueName,
+			"generation", updated.Generation)
+		fmt.Printf("\n✓ ClusterQueue '%s' updated successfully\n", clusterQueueName)
 	}
 
 	// Helper function to match node to resource flavors
@@ -366,6 +471,11 @@ func run(cmd *cobra.Command, _ []string) {
 			fmt.Printf("%s=%s", res, formatted)
 		}
 		fmt.Println("\n========================================")
+		
+		// Update ClusterQueue if requested
+		if viper.GetBool(FlagUpdateClusterQueue) {
+			updateClusterQueueQuotas(ctx, log, kueueClient, clusterQueueName, resources, nodesByFlavor)
+		}
 	}
 
 	// Add event handlers
