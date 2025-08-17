@@ -36,7 +36,7 @@ Use --dry-run to only display capacity without updating the ClusterQueue.`,
 
 	cmd.PersistentFlags().BoolP(FlagVerbose, "v", false, "Enable verbose logging")
 	cmd.Flags().StringP(FlagLabelSelector, "l", "", "Label selector to filter nodes (e.g., 'node-role.kubernetes.io/worker=true')")
-	cmd.Flags().StringP(FlagResources, "r", "cpu,memory,nvidia.com/gpu", "Comma-separated list of resources to track (e.g., 'cpu,memory,nvidia.com/gpu')")
+	cmd.Flags().StringP(FlagResources, "r", "cpu,memory,nvidia.com/gpu,rdma/ib", "Comma-separated list of resources to track (e.g., 'cpu,memory,nvidia.com/gpu,rdma/ib')")
 	cmd.Flags().StringP(FlagClusterQueue, "c", "default", "Name of the ClusterQueue to monitor")
 	cmd.Flags().Bool(FlagDryRun, false, "Only display capacity without updating the ClusterQueue")
 
