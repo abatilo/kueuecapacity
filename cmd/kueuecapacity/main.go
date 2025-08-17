@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 	kueueclientset "sigs.k8s.io/kueue/client-go/clientset/versioned"
@@ -78,10 +79,20 @@ func run(cmd *cobra.Command, _ []string) {
 	clusterQueueName := viper.GetString(FlagClusterQueue)
 	dryRun := viper.GetBool(FlagDryRun)
 
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	// Try in-cluster config first, fall back to kubeconfig
+	var config *rest.Config
+	var err error
+	
+	config, err = rest.InClusterConfig()
 	if err != nil {
-		log.ErrorContext(ctx, "Failed to build Kubernetes config", "error", err)
-		os.Exit(1)
+		log.DebugContext(ctx, "Not running in cluster, using kubeconfig", "path", kubeconfig)
+		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
+		if err != nil {
+			log.ErrorContext(ctx, "Failed to build Kubernetes config", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		log.DebugContext(ctx, "Using in-cluster Kubernetes config")
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
