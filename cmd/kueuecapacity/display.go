@@ -1,9 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"math"
-	"os"
 	"strings"
 	"text/tabwriter"
 
@@ -13,7 +14,7 @@ import (
 )
 
 // displayCapacityInformation displays the capacity information for nodes
-func (c *Controller) displayCapacityInformation(nodes []any, nodesByFlavor map[string][]*corev1.Node, flavors map[string]*kueuev1beta1.ResourceFlavor) map[string]*resource.Quantity {
+func (c *Controller) displayCapacityInformation(ctx context.Context, nodes []any, nodesByFlavor map[string][]*corev1.Node, flavors map[string]*kueuev1beta1.ResourceFlavor) map[string]*resource.Quantity {
 	grandTotals := make(map[string]*resource.Quantity)
 	for _, res := range c.resources {
 		grandTotals[res] = resource.NewQuantity(0, resource.DecimalSI)
@@ -37,12 +38,12 @@ func (c *Controller) displayCapacityInformation(nodes []any, nodesByFlavor map[s
 
 	for flavorName, flavorNodes := range nodesByFlavor {
 		flavor := flavors[flavorName]
-		title := fmt.Sprintf("ResourceFlavor: %s", flavorName)
+		nodeLabels := map[string]string{}
 		if flavor != nil && len(flavor.Spec.NodeLabels) > 0 {
-			title += fmt.Sprintf(" (nodeLabels: %v)", flavor.Spec.NodeLabels)
+			nodeLabels = flavor.Spec.NodeLabels
 		}
 
-		subtotals := printNodesTable(title, flavorNodes, c.resources)
+		subtotals := c.logNodesTable(ctx, "ResourceFlavor", flavorName, nodeLabels, flavorNodes)
 
 		for res, quantity := range subtotals {
 			grandTotals[res].Add(*quantity)
@@ -50,7 +51,7 @@ func (c *Controller) displayCapacityInformation(nodes []any, nodesByFlavor map[s
 	}
 
 	if len(unmatchedNodes) > 0 {
-		subtotals := printNodesTable("Unmatched Nodes:", unmatchedNodes, c.resources)
+		subtotals := c.logNodesTable(ctx, "Unmatched", "none", nil, unmatchedNodes)
 
 		for res, quantity := range subtotals {
 			grandTotals[res].Add(*quantity)
@@ -60,32 +61,35 @@ func (c *Controller) displayCapacityInformation(nodes []any, nodesByFlavor map[s
 	return grandTotals
 }
 
-// printNodesTable prints a table of nodes with their resource capacity
-func printNodesTable(title string, nodes []*corev1.Node, resources []string) map[string]*resource.Quantity {
-	fmt.Printf("\n%s\n", title)
-
+// logNodesTable logs a table of nodes with their resource capacity
+func (c *Controller) logNodesTable(ctx context.Context, flavorType string, flavorName string, nodeLabels map[string]string, nodes []*corev1.Node) map[string]*resource.Quantity {
 	subtotals := make(map[string]*resource.Quantity)
-	for _, res := range resources {
+	for _, res := range c.resources {
 		subtotals[res] = resource.NewQuantity(0, resource.DecimalSI)
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	// Build the table in a buffer for structured logging
+	var buf bytes.Buffer
+	w := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 
 	header := "Node"
 	separator := "----"
-	for _, res := range resources {
+	for _, res := range c.resources {
 		header += "\t" + res
 		separator += "\t" + strings.Repeat("-", len(res))
 	}
 	_, _ = fmt.Fprintln(w, header)
 	_, _ = fmt.Fprintln(w, separator)
 
+	// Build node details for structured logging
+	nodeDetails := make([]map[string]any, 0, len(nodes))
+
 	for _, node := range nodes {
 		capacity := node.Status.Capacity
-
 		row := node.Name
 
-		for _, res := range resources {
+		nodeCapacity := make(map[string]string)
+		for _, res := range c.resources {
 			resName := corev1.ResourceName(res)
 			quantity := capacity[resName]
 
@@ -95,40 +99,43 @@ func printNodesTable(title string, nodes []*corev1.Node, resources []string) map
 
 			formatted := formatResourceQuantity(res, quantity)
 			row += "\t" + formatted
+			nodeCapacity[res] = formatted
 		}
 
 		_, _ = fmt.Fprintln(w, row)
+
+		nodeDetails = append(nodeDetails, map[string]any{
+			"name":     node.Name,
+			"capacity": nodeCapacity,
+		})
 	}
 
 	if len(nodes) > 0 {
 		_, _ = fmt.Fprintln(w, separator)
 		subtotalRow := "Subtotal"
-		for _, res := range resources {
+		subtotalValues := make(map[string]string)
+		for _, res := range c.resources {
 			quantity := subtotals[res]
 			formatted := formatResourceQuantity(res, *quantity)
 			subtotalRow += "\t" + formatted
+			subtotalValues[res] = formatted
 		}
 		_, _ = fmt.Fprintln(w, subtotalRow)
+
+		_ = w.Flush()
+
+		// Log as structured data
+		c.log.DebugContext(ctx, "Node capacity summary",
+			"flavorType", flavorType,
+			"flavorName", flavorName,
+			"nodeLabels", nodeLabels,
+			"nodeCount", len(nodes),
+			"nodes", nodeDetails,
+			"subtotals", subtotalValues,
+			"tableOutput", buf.String())
 	}
 
-	_ = w.Flush()
 	return subtotals
-}
-
-// printGrandTotals prints the grand totals of all resources
-func printGrandTotals(resources []string, grandTotals map[string]*resource.Quantity) {
-	fmt.Println("\n----------------------------------------")
-	fmt.Print("GRAND TOTAL: ")
-	for i, res := range resources {
-		quantity := grandTotals[res]
-		formatted := formatResourceQuantity(res, *quantity)
-
-		if i > 0 {
-			fmt.Print(", ")
-		}
-		fmt.Printf("%s=%s", res, formatted)
-	}
-	fmt.Println("\n========================================")
 }
 
 // formatResourceQuantity formats a resource quantity for display

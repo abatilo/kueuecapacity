@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -10,6 +9,7 @@ import (
 	"syscall"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -84,21 +84,21 @@ func (c *Controller) Run(ctx context.Context) {
 		AddFunc: func(obj any) {
 			node, ok := obj.(*corev1.Node)
 			if ok {
-				c.log.InfoContext(ctx, "Node added", "node", node.Name)
+				c.log.DebugContext(ctx, "Node added", "node", node.Name)
 				c.handleNodeChange(ctx, "ADD", node.Name, nodeInformer)
 			}
 		},
 		UpdateFunc: func(oldObj, newObj any) {
 			node, ok := newObj.(*corev1.Node)
 			if ok {
-				c.log.InfoContext(ctx, "Node updated", "node", node.Name)
+				c.log.DebugContext(ctx, "Node updated", "node", node.Name)
 				c.handleNodeChange(ctx, "UPDATE", node.Name, nodeInformer)
 			}
 		},
 		DeleteFunc: func(obj any) {
 			node, ok := obj.(*corev1.Node)
 			if ok {
-				c.log.InfoContext(ctx, "Node deleted", "node", node.Name)
+				c.log.DebugContext(ctx, "Node deleted", "node", node.Name)
 				c.handleNodeChange(ctx, "DELETE", node.Name, nodeInformer)
 			}
 		},
@@ -110,7 +110,7 @@ func (c *Controller) Run(ctx context.Context) {
 	stopCh := make(chan struct{})
 	defer close(stopCh)
 
-	c.log.InfoContext(ctx, "Starting node informer with label selector", "selector", c.labelSelector)
+	c.log.DebugContext(ctx, "Starting node informer with label selector", "selector", c.labelSelector)
 	factory.Start(stopCh)
 	kueueFactory.Start(stopCh)
 
@@ -119,7 +119,7 @@ func (c *Controller) Run(ctx context.Context) {
 		os.Exit(1)
 	}
 
-	c.log.InfoContext(ctx, "Cache synced, watching for node changes...")
+	c.log.DebugContext(ctx, "Cache synced, watching for node changes...")
 
 	c.handleNodeChange(ctx, "INITIAL", "startup", nodeInformer)
 
@@ -132,18 +132,20 @@ func (c *Controller) Run(ctx context.Context) {
 
 		c.log.InfoContext(ctx, "Graceful shutdown complete")
 	case <-runCtx.Done():
-		c.log.InfoContext(ctx, "Context cancelled")
+		c.log.DebugContext(ctx, "Context cancelled")
 	}
 }
 
 // handleNodeChange processes node changes and updates the display
 func (c *Controller) handleNodeChange(ctx context.Context, eventType string, triggerNode string, nodeInformer cache.SharedIndexInformer) {
 	nodes := nodeInformer.GetStore().List()
-	fmt.Printf("\n[%s] Event triggered by: %s\n", eventType, triggerNode)
-	fmt.Printf("ClusterQueue: %s\n", c.clusterQueueName)
-	fmt.Printf("Current nodes matching selector '%s': %d\n", c.labelSelector, len(nodes))
-	fmt.Printf("Tracking resources: %v\n", c.resources)
-	fmt.Println("========================================")
+	c.log.DebugContext(ctx, "Node event triggered",
+		"eventType", eventType,
+		"triggerNode", triggerNode,
+		"clusterQueue", c.clusterQueueName,
+		"nodeCount", len(nodes),
+		"labelSelector", c.labelSelector,
+		"resources", c.resources)
 
 	flavors, err := c.getResourceFlavors(ctx)
 	if err != nil {
@@ -153,14 +155,14 @@ func (c *Controller) handleNodeChange(ctx context.Context, eventType string, tri
 
 	nodesByFlavor := c.groupNodesByFlavor(nodes, flavors)
 
-	grandTotals := c.displayCapacityInformation(nodes, nodesByFlavor, flavors)
+	grandTotals := c.displayCapacityInformation(ctx, nodes, nodesByFlavor, flavors)
 
-	printGrandTotals(c.resources, grandTotals)
+	c.logGrandTotals(ctx, grandTotals, nodesByFlavor, nodes)
 
 	if !c.dryRun {
 		c.updateClusterQueueQuotas(ctx, nodesByFlavor)
 	} else {
-		fmt.Println("\n🔍 Dry-run mode: ClusterQueue will not be updated")
+		c.log.InfoContext(ctx, "Dry-run mode enabled", "message", "ClusterQueue will not be updated")
 	}
 }
 
@@ -178,4 +180,88 @@ func (c *Controller) groupNodesByFlavor(nodes []any, flavors map[string]*kueuev1
 	}
 
 	return nodesByFlavor
+}
+
+// logGrandTotals logs the grand totals of all resources and breakdown by flavor
+func (c *Controller) logGrandTotals(ctx context.Context, grandTotals map[string]*resource.Quantity, nodesByFlavor map[string][]*corev1.Node, allNodes []any) {
+	// Log grand totals
+	totals := make(map[string]string)
+	for _, res := range c.resources {
+		quantity := grandTotals[res]
+		totals[res] = formatResourceQuantity(res, *quantity)
+	}
+
+	// Calculate per-flavor totals
+	flavorBreakdown := make(map[string]map[string]any)
+	for flavorName, nodes := range nodesByFlavor {
+		flavorTotals := make(map[string]*resource.Quantity)
+		for _, res := range c.resources {
+			flavorTotals[res] = resource.NewQuantity(0, resource.DecimalSI)
+		}
+
+		for _, node := range nodes {
+			for _, res := range c.resources {
+				resName := corev1.ResourceName(res)
+				quantity := node.Status.Capacity[resName]
+				flavorTotals[res].Add(quantity)
+			}
+		}
+
+		flavorSummary := make(map[string]string)
+		for _, res := range c.resources {
+			flavorSummary[res] = formatResourceQuantity(res, *flavorTotals[res])
+		}
+
+		flavorBreakdown[flavorName] = map[string]any{
+			"nodeCount": len(nodes),
+			"resources": flavorSummary,
+		}
+	}
+
+	// Calculate unmatched nodes
+	matchedNodeNames := make(map[string]bool)
+	for _, flavorNodes := range nodesByFlavor {
+		for _, node := range flavorNodes {
+			matchedNodeNames[node.Name] = true
+		}
+	}
+
+	var unmatchedNodes []*corev1.Node
+	for _, obj := range allNodes {
+		if node, ok := obj.(*corev1.Node); ok {
+			if !matchedNodeNames[node.Name] {
+				unmatchedNodes = append(unmatchedNodes, node)
+			}
+		}
+	}
+
+	// Add unmatched nodes to breakdown if any exist
+	if len(unmatchedNodes) > 0 {
+		unmatchedTotals := make(map[string]*resource.Quantity)
+		for _, res := range c.resources {
+			unmatchedTotals[res] = resource.NewQuantity(0, resource.DecimalSI)
+		}
+
+		for _, node := range unmatchedNodes {
+			for _, res := range c.resources {
+				resName := corev1.ResourceName(res)
+				quantity := node.Status.Capacity[resName]
+				unmatchedTotals[res].Add(quantity)
+			}
+		}
+
+		unmatchedSummary := make(map[string]string)
+		for _, res := range c.resources {
+			unmatchedSummary[res] = formatResourceQuantity(res, *unmatchedTotals[res])
+		}
+
+		flavorBreakdown["_unmatched"] = map[string]any{
+			"nodeCount": len(unmatchedNodes),
+			"resources": unmatchedSummary,
+		}
+	}
+
+	c.log.InfoContext(ctx, "Cluster capacity summary",
+		"grandTotals", totals,
+		"resourceFlavors", flavorBreakdown)
 }

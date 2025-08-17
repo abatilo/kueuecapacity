@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -14,7 +13,7 @@ import (
 func (c *Controller) getResourceFlavors(ctx context.Context) (map[string]*kueuev1beta1.ResourceFlavor, error) {
 	clusterQueue, err := c.kueueClient.KueueV1beta1().ClusterQueues().Get(ctx, c.clusterQueueName, metav1.GetOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to get ClusterQueue %s: %w", c.clusterQueueName, err)
+		return nil, err
 	}
 
 	flavors := make(map[string]*kueuev1beta1.ResourceFlavor)
@@ -62,8 +61,8 @@ func (c *Controller) updateClusterQueueQuotas(ctx context.Context, nodesByFlavor
 
 	c.log.InfoContext(ctx, "Successfully updated ClusterQueue",
 		"clusterQueue", c.clusterQueueName,
-		"generation", updated.Generation)
-	fmt.Printf("\n✓ ClusterQueue '%s' updated successfully\n", c.clusterQueueName)
+		"generation", updated.Generation,
+		"status", "✓ Updated successfully")
 }
 
 // findTargetResourceGroup finds the ResourceGroup with matching coveredResources
@@ -124,7 +123,7 @@ func (c *Controller) updateFlavorQuotas(ctx context.Context, cq *kueuev1beta1.Cl
 				if newQuota, ok := totals[resourceName]; ok {
 					oldQuota := rq.NominalQuota.DeepCopy()
 					cq.Spec.ResourceGroups[targetGroupIndex].Flavors[i].Resources[j].NominalQuota = *newQuota
-					c.log.InfoContext(ctx, "Updating resource quota",
+					c.log.DebugContext(ctx, "Updating resource quota",
 						"flavor", flavorName,
 						"resource", resourceName,
 						"oldQuota", oldQuota.String(),
@@ -135,7 +134,7 @@ func (c *Controller) updateFlavorQuotas(ctx context.Context, cq *kueuev1beta1.Cl
 			for j := range fq.Resources {
 				resourceName := string(fq.Resources[j].Name)
 				cq.Spec.ResourceGroups[targetGroupIndex].Flavors[i].Resources[j].NominalQuota = *resource.NewQuantity(0, resource.DecimalSI)
-				c.log.InfoContext(ctx, "Setting resource quota to zero",
+				c.log.DebugContext(ctx, "Setting resource quota to zero",
 					"flavor", flavorName,
 					"resource", resourceName)
 			}
