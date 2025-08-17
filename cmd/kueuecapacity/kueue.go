@@ -33,7 +33,7 @@ func (c *Controller) getResourceFlavors(ctx context.Context) (map[string]*kueuev
 
 // updateClusterQueueQuotas updates the ClusterQueue resource quotas based on node capacity
 func (c *Controller) updateClusterQueueQuotas(ctx context.Context, nodesByFlavor map[string][]*corev1.Node) {
-	c.log.InfoContext(ctx, "Updating ClusterQueue resource quotas", "clusterQueue", c.clusterQueueName)
+	c.log.DebugContext(ctx, "Checking ClusterQueue resource quotas", "clusterQueue", c.clusterQueueName)
 
 	cq, err := c.kueueClient.KueueV1beta1().ClusterQueues().Get(ctx, c.clusterQueueName, metav1.GetOptions{})
 	if err != nil {
@@ -49,10 +49,22 @@ func (c *Controller) updateClusterQueueQuotas(ctx context.Context, nodesByFlavor
 		return
 	}
 
+	// Store original quotas for comparison
+	originalQuotas := c.captureCurrentQuotas(cq, targetGroupIndex)
+
 	flavorTotals := c.calculateFlavorTotals(nodesByFlavor)
 
 	c.updateFlavorQuotas(ctx, cq, targetGroupIndex, flavorTotals)
 
+	// Check if quotas actually changed
+	newQuotas := c.captureCurrentQuotas(cq, targetGroupIndex)
+	if c.quotasAreEqual(originalQuotas, newQuotas) {
+		c.log.DebugContext(ctx, "ClusterQueue quotas unchanged, skipping update",
+			"clusterQueue", c.clusterQueueName)
+		return
+	}
+
+	c.log.InfoContext(ctx, "Updating ClusterQueue resource quotas", "clusterQueue", c.clusterQueueName)
 	updated, err := c.kueueClient.KueueV1beta1().ClusterQueues().Update(ctx, cq, metav1.UpdateOptions{})
 	if err != nil {
 		c.log.ErrorContext(ctx, "Failed to update ClusterQueue", "error", err)
@@ -140,6 +152,54 @@ func (c *Controller) updateFlavorQuotas(ctx context.Context, cq *kueuev1beta1.Cl
 			}
 		}
 	}
+}
+
+// captureCurrentQuotas captures the current quotas for comparison
+func (c *Controller) captureCurrentQuotas(cq *kueuev1beta1.ClusterQueue, targetGroupIndex int) map[string]map[string]resource.Quantity {
+	quotas := make(map[string]map[string]resource.Quantity)
+
+	for _, fq := range cq.Spec.ResourceGroups[targetGroupIndex].Flavors {
+		flavorName := string(fq.Name)
+		quotas[flavorName] = make(map[string]resource.Quantity)
+
+		for _, rq := range fq.Resources {
+			resourceName := string(rq.Name)
+			quotas[flavorName][resourceName] = rq.NominalQuota.DeepCopy()
+		}
+	}
+
+	return quotas
+}
+
+// quotasAreEqual compares two quota maps for equality
+func (c *Controller) quotasAreEqual(q1, q2 map[string]map[string]resource.Quantity) bool {
+	if len(q1) != len(q2) {
+		return false
+	}
+
+	for flavorName, flavorQuotas1 := range q1 {
+		flavorQuotas2, exists := q2[flavorName]
+		if !exists {
+			return false
+		}
+
+		if len(flavorQuotas1) != len(flavorQuotas2) {
+			return false
+		}
+
+		for resourceName, quantity1 := range flavorQuotas1 {
+			quantity2, exists := flavorQuotas2[resourceName]
+			if !exists {
+				return false
+			}
+
+			if !quantity1.Equal(quantity2) {
+				return false
+			}
+		}
+	}
+
+	return true
 }
 
 // matchNodeToFlavors matches a node to resource flavors based on node labels
