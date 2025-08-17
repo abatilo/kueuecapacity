@@ -82,7 +82,7 @@ func run(cmd *cobra.Command, _ []string) {
 	// Try in-cluster config first, fall back to kubeconfig
 	var config *rest.Config
 	var err error
-	
+
 	config, err = rest.InClusterConfig()
 	if err != nil {
 		log.DebugContext(ctx, "Not running in cluster, using kubeconfig", "path", kubeconfig)
