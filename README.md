@@ -25,6 +25,18 @@ Or use the Docker image directly:
 docker pull ghcr.io/abatilo/kueuecapacity:latest
 ```
 
+> [!WARNING]
+> **CRITICAL: You MUST update the label selector in `deploy/deployment.yaml` before deploying!**
+> 
+> The default deployment uses `--label-selector=node.coreweave.cloud/state=production` which is specific to CoreWeave clusters. 
+> 
+> **Change this to match YOUR node labels or remove it entirely to monitor all nodes:**
+> - To monitor all nodes: Remove the `--label-selector` argument completely
+> - To monitor worker nodes: Use `--label-selector=node-role.kubernetes.io/worker=true`
+> - To monitor GPU nodes: Use `--label-selector=accelerator=nvidia-gpu` (or your GPU label)
+> 
+> Failing to update this will result in the controller monitoring the wrong nodes or no nodes at all!
+
 ## Usage
 
 ```bash
