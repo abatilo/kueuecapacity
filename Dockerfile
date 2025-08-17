@@ -21,7 +21,7 @@ RUN \
 EOF
 
 
-FROM cgr.dev/chainguard/static:latest
+FROM scratch
 COPY --from=builder /go/bin/kueuecapacity /usr/local/bin/kueuecapacity
 
 ENTRYPOINT ["kueuecapacity"]
